@@ -18,8 +18,7 @@ def get_db_connection():
                 host=db_host,
                 database=db_name,
                 user=db_user,
-                password=db_pass
-            )
+                password=db_pass)
             return conn
         except psycopg2.OperationalError:
             retries -= 1
@@ -28,7 +27,6 @@ def get_db_connection():
 
     app.logger.error("Could not connect to database.")
     return None
-
 
 @app.route("/db-health", methods=["GET"])
 def db_health_check():
@@ -39,76 +37,128 @@ def db_health_check():
     conn.close()
     return jsonify({"status": "ok", "message": "Database connection successful"})
 
-# In-memory store
-news = [
-    {"id": 1, "title": "Initial News", "content": "This is the first article."}
-]
-# We use a global variable for the counter
-global next_id
-next_id = 2 # simple auto-increment for IDs
-
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
-        "message": "Welcome to the News API!",
+        "message": "Welcome to the News API (with Postgres)!",
         "endpoints": {
             "list_all_news": "GET /news",
             "create_news": "POST /news",
             "update_news": "PUT /news/<id>",
-            "delete_news": "DELETE /news/<id>"
+            "delete_news": "DELETE /news/<id>",
+            "db_health": "GET /db-health"
         }
     })
 
 @app.route("/news", methods=["GET"])
 def list_news():
-    return jsonify({"count": len(news), "items": news})
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    items = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, title, content FROM news ORDER BY id;")
+            rows = cur.fetchall()
+            for row in rows:
+                items.append({"id": row[0], "title": row[1], "content": row[2]})
+    except Exception as e:
+        app.logger.error(f"Error listing news: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+    return jsonify({"count": len(items), "items": items})
+
 
 @app.route("/news", methods=["POST"])
 def create_news():
-    global next_id
-    if not request.json or not 'title' in request.json:
-        abort(400) # Bad request
-    
-    new_item = {
-        'id': next_id,
-        'title': request.json['title'],
-        'content': request.json.get('content', "")
-    }
-    news.append(new_item)
-    next_id += 1
-    return jsonify(new_item), 201 # Created
+    if not request.json or 'title' not in request.json:
+        abort(400)
 
-# Helper function to find an item
-def find_news_item(item_id):
-    for item in news:
-        if item['id'] == item_id:
-            return item
-    return None
+    title = request.json['title']
+    content = request.json.get('content', "")
+
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    new_item = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"INSERT INTO news (title, content) VALUES (’{title}’, ’{
+content}’) RETURNING id;")
+            row = cur.fetchone()[0]
+            conn.commit()
+            new_item = {"id": new_id, "title": title, "content": content}
+    except Exception as e:
+        app.logger.error(f"Error creating news: {e}")
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+    return jsonify(new_item), 201
 
 @app.route("/news/<int:item_id>", methods=["PUT"])
 def update_news(item_id: int):
-    item = find_news_item(item_id)
-    if not item:
-        abort(404) # Not found
     if not request.json:
         abort(400)
 
-    # Update fields
-    if 'title' in request.json:
-        item['title'] = request.json['title']
-    if 'content' in request.json:
-        item['content'] = request.json['content']
-        
-    return jsonify(item)
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    updated_item = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT title, content FROM news WHERE id = {item_id};")
+            item = cur.fetchone()
+            if not item:
+                abort(404)
+
+            title = request.json.get('title', item[0])
+            content = request.json.get('content', item[1])
+
+            cur.execute(f"UPDATE news SET title = '{title}', content = '{content}' WHERE id = {item_id};")
+            conn.commit()
+            updated_item = {"id": item_id, "title": title, "content": content}
+    except Exception as e:
+        app.logger.error(f"Error updating news: {e}")
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+    return jsonify(updated_item)
 
 @app.route("/news/<int:item_id>", methods=["DELETE"])
 def delete_news(item_id: int):
-    item = find_news_item(item_id)
-    if not item:
-        abort(404)
-        
-    news.remove(item)
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM news WHERE id = {item_id} RETURNING id;")
+            deleted = cur.fetchone()
+            if not deleted:
+                abort(404)
+
+            conn.commit()
+    except Exception as e:
+        app.logger.error(f"Error deleting news: {e}")
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
     return jsonify({"status": "deleted", "id": item_id})
 
 if __name__ == "__main__":
-    app.run(threaded=True, host='0.0.0.0', port=3000)
+    app.run(threaded=True, host="0.0.0.0", port=3000)
