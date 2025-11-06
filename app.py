@@ -92,7 +92,7 @@ def create_news():
 content}') RETURNING id;")
             row = cur.fetchone()[0]
             conn.commit()
-            new_item = {"id": new_id, "title": title, "content": content}
+            new_item = {"id": row[0], "title": title, "content": content}
     except Exception as e:
         app.logger.error(f"Error creating news: {e}")
         conn.rollback()
