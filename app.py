@@ -72,7 +72,6 @@ def list_news():
 
     return jsonify({"count": len(items), "items": items})
 
-
 @app.route("/news", methods=["POST"])
 def create_news():
     if not request.json or 'title' not in request.json:
@@ -88,9 +87,11 @@ def create_news():
     new_item = {}
     try:
         with conn.cursor() as cur:
-            cur.execute(f"INSERT INTO news (title, content) VALUES (’{title}’, ’{
-content}’) RETURNING id;")
-            row = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO news (title, content) VALUES (%s, %s) RETURNING id;",
+                (title, content)
+            )
+            new_id = cur.fetchone()[0]
             conn.commit()
             new_item = {"id": new_id, "title": title, "content": content}
     except Exception as e:
